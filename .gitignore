@@ -1,0 +1,6 @@
+secrets/
+*.md
+*.txt
+*.pdf
+*.html
+*test.json
