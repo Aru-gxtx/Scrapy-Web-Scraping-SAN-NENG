@@ -12,6 +12,22 @@ from openpyxl import load_workbook
 # File paths
 SOURCES_DIR = os.path.join(os.path.dirname(__file__), "sources")
 JSON_CANDIDATES = [
+    os.path.join(os.path.dirname(__file__), "sanneng", "coupang.json"),
+    os.path.join(SOURCES_DIR, "coupang.json"),
+    os.path.join(os.path.dirname(__file__), "sanneng", "phoonhuat.json"),
+    os.path.join(SOURCES_DIR, "phoonhuat.json"),
+    os.path.join(os.path.dirname(__file__), "sanneng", "sinarhimalaya.json"),
+    os.path.join(SOURCES_DIR, "sinarhimalaya.json"),
+    os.path.join(os.path.dirname(__file__), "sanneng", "redmanshop.json"),
+    os.path.join(SOURCES_DIR, "redmanshop.json"),
+    os.path.join(os.path.dirname(__file__), "sanneng", "mehsonline.json"),
+    os.path.join(SOURCES_DIR, "mehsonline.json"),
+    os.path.join(os.path.dirname(__file__), "sanneng", "sannenggroup.json"),
+    os.path.join(SOURCES_DIR, "sannenggroup.json"),
+    os.path.join(os.path.dirname(__file__), "sanneng", "unopan.json"),
+    os.path.join(SOURCES_DIR, "unopan.json"),
+    os.path.join(os.path.dirname(__file__), "sanneng", "invi.json"),
+    os.path.join(SOURCES_DIR, "invi.json"),
     os.path.join(os.path.dirname(__file__), "sanneng", "tokopedia_v0.1.json"),
     os.path.join(os.path.dirname(__file__), "sanneng", "sannengvietnam.json"),
     os.path.join(os.path.dirname(__file__), "sanneng", "sannengvietnam_v0.1.json"),
@@ -56,13 +72,23 @@ def resolve_json_file():
     return ""
 
 
+def resolve_json_files():
+    return [path for path in JSON_CANDIDATES if os.path.exists(path)]
+
+
 def create_sku_to_data_map(json_data):
     sku_map = {}
+
+    # Pass 1: index explicit SKU fields first (authoritative)
     for item in json_data:
-        sku = normalize_sku(item.get("sku", ""))
-        if not sku:
-            sku = infer_sku_from_item(item)
-        if sku:
+        direct_sku = normalize_sku(item.get("sku", ""))
+        if direct_sku:
+            sku_map.setdefault(direct_sku, item)
+
+    # Pass 2: add inferred aliases only if key is still missing
+    for item in json_data:
+        candidates = extract_sku_candidates(item)
+        for sku in candidates:
             sku_map.setdefault(sku, item)
     return sku_map
 
@@ -73,9 +99,37 @@ def normalize_sku(value):
     return re.sub(r"[^A-Z0-9]", "", str(value).upper())
 
 
+def find_item_by_sku(sku_map, sku):
+    normalized = normalize_sku(sku)
+    if normalized and normalized in sku_map:
+        return sku_map[normalized]
+
+    for part in split_sku_parts(sku):
+        part_normalized = normalize_sku(part)
+        if part_normalized and part_normalized in sku_map:
+            return sku_map[part_normalized]
+
+    return None
+
+
+def split_sku_parts(value):
+    if value is None:
+        return []
+
+    text = str(value).strip()
+    if not text:
+        return []
+
+    # Handles combined catalog values like: SN1071/T231176, SN1071;T231176, SN1071,T231176
+    parts = re.split(r"[\/|,;\n\r\t]+", text)
+    return [part.strip() for part in parts if part and part.strip()]
+
+
 def infer_sku_from_item(item):
     candidates = [
         item.get("name", ""),
+        item.get("title", ""),
+        item.get("description", ""),
         item.get("product_url", ""),
         item.get("url", ""),
     ]
@@ -87,15 +141,69 @@ def infer_sku_from_item(item):
         match = pattern.search(str(text))
         if match:
             return normalize_sku(match.group(0))
+
+        # Also support alphanumeric catalog codes like GA-135, S-155 from descriptions
+        generic_match = re.search(r"\b[A-Z]{1,5}[\s\-]*\d{2,6}[A-Z]?\b", str(text), re.IGNORECASE)
+        if generic_match:
+            return normalize_sku(generic_match.group(0))
     return ""
 
 
+def extract_sku_candidates(item):
+    sku_candidates = []
+
+    direct_sku = normalize_sku(item.get("sku", ""))
+    if direct_sku:
+        sku_candidates.append(direct_sku)
+
+    inferred = infer_sku_from_item(item)
+    if inferred:
+        sku_candidates.append(inferred)
+
+    text_pool = [
+        item.get("name", ""),
+        item.get("title", ""),
+        item.get("description", ""),
+        item.get("product_url", ""),
+        item.get("url", ""),
+    ]
+
+    pattern = re.compile(r"\b[A-Z]{1,5}[\s\-]*\d{2,6}[A-Z]?\b", re.IGNORECASE)
+    for text in text_pool:
+        if not text:
+            continue
+        for raw in pattern.findall(str(text)):
+            normalized = normalize_sku(raw)
+            if normalized:
+                sku_candidates.append(normalized)
+
+    # preserve order while removing duplicates
+    unique_candidates = []
+    seen = set()
+    for sku in sku_candidates:
+        if sku in seen:
+            continue
+        seen.add(sku)
+        unique_candidates.append(sku)
+
+    return unique_candidates
+
+
 def format_image_link(item):
-    gallery_links = item.get("gallery_full_image_links") or item.get("gallery_images", [])
+    gallery_links = extract_gallery_links(item)
     if gallery_links:
         return gallery_links[0]
     # Fallback to listing image
     return item.get("image", "") or item.get("image_url", "")
+
+
+def extract_gallery_links(item):
+    return (
+        item.get("gallery_full_image_links")
+        or item.get("gallery_images")
+        or item.get("detail_image_urls")
+        or []
+    )
 
 
 def format_gallery_list(links):
@@ -122,28 +230,26 @@ def populate_xlsx(xlsx_file, sku_map):
             skipped_count += 1
             continue
 
-        sku = normalize_sku(sku)
+        item = find_item_by_sku(sku_map, sku)
 
-        if sku not in sku_map:
+        if item is None:
             unmatched_count += 1
             continue
-
-        item = sku_map[sku]
         
         # Populate columns in priority order
         image_link = format_image_link(item)
         product_name = item.get("name", "")
         product_url = item.get("url", "") or item.get("product_url", "")
         category = item.get("category", "")
-        gallery_full_links = item.get("gallery_full_image_links") or item.get("gallery_images", [])
+        gallery_full_links = extract_gallery_links(item)
         if not gallery_full_links:
             image_link_fallback = item.get("image", "") or item.get("image_url", "")
             gallery_full_links = [image_link_fallback] if image_link_fallback else []
         gallery_full = format_gallery_list(gallery_full_links)
         gallery_thumb = format_gallery_list(item.get("gallery_thumbnail_links", []))
         gallery_srcset = format_gallery_list(item.get("gallery_thumb_srcsets", []))
-        image_count = item.get("gallery_image_count", len(gallery_full_links))
-        page_title = item.get("product_page_title") or item.get("page_title", "")
+        image_count = item.get("gallery_image_count") or item.get("detail_image_count") or len(gallery_full_links)
+        page_title = item.get("product_page_title") or item.get("page_title") or item.get("title", "")
 
         # Write to cells
         ws.cell(row=row_idx, column=COL_IMAGE_LINK).value = image_link
@@ -169,10 +275,10 @@ def main():
     print("SAN NENG XLSX Populator")
     print("=" * 70)
 
-    json_file = resolve_json_file()
+    json_files = resolve_json_files()
 
     # Check files exist
-    if not json_file:
+    if not json_files:
         print("ERROR: No supported JSON source file found.")
         print("Checked:")
         for path in JSON_CANDIDATES:
@@ -183,12 +289,16 @@ def main():
         print(f"ERROR: XLSX file not found at {XLSX_FILE}")
         return False
 
-    print(f"\nLoading JSON: {json_file}")
-    json_data = load_json_data(json_file)
-    print(f"  ✓ Loaded {len(json_data)} items from JSON")
+    merged_json_data = []
+    print("\nLoading JSON sources:")
+    for json_file in json_files:
+        source_data = load_json_data(json_file)
+        merged_json_data.extend(source_data)
+        print(f"  ✓ {json_file} ({len(source_data)} items)")
+    print(f"  ✓ Total merged items: {len(merged_json_data)}")
 
     print(f"\nCreating SKU map...")
-    sku_map = create_sku_to_data_map(json_data)
+    sku_map = create_sku_to_data_map(merged_json_data)
     print(f"  ✓ Created map with {len(sku_map)} unique SKUs")
 
     print(f"\nPopulating XLSX: {XLSX_FILE}")
