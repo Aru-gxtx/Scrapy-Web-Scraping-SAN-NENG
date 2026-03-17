@@ -32,6 +32,11 @@ JSON_CANDIDATES = [
     os.path.join(os.path.dirname(__file__), "sanneng", "sannengvietnam.json"),
     os.path.join(os.path.dirname(__file__), "sanneng", "sannengvietnam_v0.1.json"),
     os.path.join(os.path.dirname(__file__), "sanneng", "chakawal_v0.1.json"),
+    os.path.join(os.path.dirname(__file__), "sanneng", "kitchenworldthailand.json"),
+    os.path.join(SOURCES_DIR, "kitchenworldthailand.json"),
+    os.path.join(os.path.dirname(__file__), "sanneng", "kainan_v0.2.json"),
+    os.path.join(os.path.dirname(__file__), "sanneng", "simplydifferent.json"),
+    os.path.join(SOURCES_DIR, "simplydifferent.json"),
 ]
 XLSX_FILE = os.path.join(SOURCES_DIR, "SAN NENG.xlsx")
 
@@ -108,6 +113,29 @@ def find_item_by_sku(sku_map, sku):
         part_normalized = normalize_sku(part)
         if part_normalized and part_normalized in sku_map:
             return sku_map[part_normalized]
+
+
+    # Fallback: search for normalized SKU as substring in normalized name/title/description fields in sku_map
+    for item in sku_map.values():
+        text_pool = [item.get("name", ""), item.get("title", ""), item.get("description", "")]
+        for text in text_pool:
+            if not text:
+                continue
+            norm_text = normalize_sku(text)
+            if normalized and normalized in norm_text:
+                return item
+
+    # FINAL fallback: search all items in merged_json_data for normalized SKU in name/title/description
+    global merged_json_data
+    if 'merged_json_data' in globals():
+        for item in merged_json_data:
+            text_pool = [item.get("name", ""), item.get("title", ""), item.get("description", "")]
+            for text in text_pool:
+                if not text:
+                    continue
+                norm_text = normalize_sku(text)
+                if normalized and normalized in norm_text:
+                    return item
 
     return None
 
@@ -289,6 +317,9 @@ def main():
         print(f"ERROR: XLSX file not found at {XLSX_FILE}")
         return False
 
+
+    # Make merged_json_data global for fallback matching
+    global merged_json_data
     merged_json_data = []
     print("\nLoading JSON sources:")
     for json_file in json_files:
